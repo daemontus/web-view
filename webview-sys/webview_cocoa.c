@@ -1,6 +1,7 @@
 #include "webview.h"
 
 #include <objc/objc-runtime.h>
+#include <WebKit/WKWebView.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <limits.h>
 
@@ -26,6 +27,7 @@ struct cocoa_webview {
   webview_external_invoke_cb_t external_invoke_cb;
   struct webview_priv priv;
   void *userdata;
+  id userController;
 };
 
 WEBVIEW_API void webview_free(webview_t w) {
@@ -54,6 +56,7 @@ WEBVIEW_API webview_t webview_new(
   wv->min_height = min_height;
 	wv->external_invoke_cb = external_invoke_cb;
 	wv->userdata = userdata;
+	wv->userController = NULL;
 	if (webview_init(wv) != 0) {
 		webview_free(wv);
 		return NULL;
@@ -104,6 +107,9 @@ static void webview_window_will_close(id self, SEL cmd, id notification) {
   struct cocoa_webview *wv =
       (struct cocoa_webview *)objc_getAssociatedObject(self, "webview");
   wv->priv.should_exit = 1;
+
+  printf("Window will close %ld %ld\n", wv, wv->external_invoke_cb);
+  fflush(stdout);
   /***
   Since by default for `webview_loop` is set to be blocking
   we need to somehow signal the application that our
@@ -141,8 +147,13 @@ static void webview_external_invoke(id self, SEL cmd, id contentController,
   struct cocoa_webview *wv =
       (struct cocoa_webview *)objc_getAssociatedObject(contentController, "webview");
   if (wv == NULL || wv->external_invoke_cb == NULL) {
+    printf("Return because null %ld\n", wv);
+    fflush(stdout);
     return;
   }
+
+  printf("External invoke %ld %ld %ld\n", wv, wv->external_invoke_cb, contentController);
+  fflush(stdout);
 
   wv->external_invoke_cb(wv, (const char *)objc_msgSend(
                                objc_msgSend(message, sel_registerName("body")),
@@ -318,6 +329,7 @@ WEBVIEW_API int webview_init(webview_t w) {
 
   id userController = objc_msgSend((id)objc_getClass("WKUserContentController"),
                                    sel_registerName("new"));
+  wv->userController = userController;
   objc_setAssociatedObject(userController, "webview", (id)(w),
                            OBJC_ASSOCIATION_ASSIGN);
   objc_msgSend(
@@ -673,8 +685,41 @@ WEBVIEW_API void webview_dispatch(webview_t w, webview_dispatch_fn fn,
 
 WEBVIEW_API void webview_exit(webview_t w) {
   struct cocoa_webview* wv = (struct cocoa_webview*)w;
+  printf("Exit! %ld %ld\n", wv, wv->external_invoke_cb);
+  fflush(stdout);
   wv->external_invoke_cb = NULL;
+  Class wv_class = object_getClass((id) wv->priv.webview);
+  objc_property_t config_prop = class_getProperty(wv_class, "configuration");
+  const char* getterName = property_copyAttributeValue(config_prop,"G");
+  id configuration = NULL;
+  if (getterName == NULL) {
+    configuration = objc_msgSend((id) wv->priv.webview, sel_registerName("configuration"));
+  } else {
+    configuration = objc_msgSend((id) wv->priv.webview, sel_registerName(getterName));
+  }
+
+  Class config_class = object_getClass(configuration);
+  objc_property_t controller_prop = class_getProperty(config_class, "userContentController");
+  const char* controllerGetter = property_copyAttributeValue(controller_prop,"G");
+  id controller = NULL;
+  if (getterName == NULL) {
+      controller = objc_msgSend(configuration, sel_registerName("userContentController"));
+    } else {
+      controller = objc_msgSend(configuration, sel_registerName(controllerGetter));
+    }
+
+  printf("Configuration: %ld; Controller: %ld\n", configuration, controller);
+  objc_setAssociatedObject(controller, "webview", NULL,
+                             OBJC_ASSOCIATION_ASSIGN);
+  printf("Exit! %ld %ld\n", wv, wv->external_invoke_cb);
+  fflush(stdout);
   objc_msgSend(wv->priv.window, sel_registerName("close"));
+}
+
+WEBVIEW_API void webview_destroy(webview_t w) {
+    struct cocoa_webview* wv = (struct cocoa_webview*)w;
+    printf("Destroy! %ld %ld\n", wv, wv->external_invoke_cb);
+    fflush(stdout);
 }
 
 WEBVIEW_API void webview_print_log(const char *s) { printf("%s\n", s); }
